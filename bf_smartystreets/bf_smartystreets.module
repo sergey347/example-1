@@ -1,0 +1,562 @@
+<?php
+
+/**
+ * @file
+ * Backflow Smartystreets module.
+ */
+
+require_once 'includes/bf_smartystreets.admin.inc';
+require_once 'includes/bf_smartystreets.vbo.inc';
+
+define('BF_SS_EXISTS', 'exists');
+define('BF_SS_NOT_EXISTS', 'not exists');
+
+define('BF_SS_CONTACT_ENTITY_TYPE', 'crm_core_contact');
+
+define('BF_SS_HIGH_RISE', 'SS:High-rise');
+define('BF_SS_VALID', 'SS:Valid');
+define('BF_SS_NOT_VALID', 'SS:Not-valid');
+define('BF_SS_VACANT', 'SS:Vacant');
+
+use SmartyStreets\PhpSdk\ClientBuilder;
+use SmartyStreets\PhpSdk\StaticCredentials;
+use SmartyStreets\PhpSdk\International_Street\Lookup as InternationalLookup;
+use SmartyStreets\PhpSdk\US_Autocomplete\Lookup as AutocompleteLookup;
+use SmartyStreets\PhpSdk\US_Extract\Lookup as ExtractLookup;
+use SmartyStreets\PhpSdk\US_Street\Lookup as StreetLookup;
+use SmartyStreets\PhpSdk\US_ZIPCode\Lookup as ZIPCodeLookup;
+
+/**
+ * Implements hook_menu().
+ */
+function bf_smartystreets_menu() {
+  $items = [];
+
+  $items['admin/config/services/bf_smartystreets'] = [
+    'title' => 'BF Smartystreets',
+    'description' => 'Settings related to Smartystreets API service.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => ['bf_smartystreets_admin_settings'],
+    'access arguments' => ['administer site configuration'],
+    'type' => MENU_NORMAL_ITEM,
+  ];
+
+  return $items;
+}
+
+/**
+ * Implements hook_views_api().
+ */
+function bf_smartystreets_views_api() {
+  $path = drupal_get_path('module', 'bf_smartystreets');
+  return [
+    'api' => 3,
+    'path' => "$path/includes/views",
+  ];
+}
+
+/**
+ * Implements hook_views_pre_view().
+ */
+function bf_smartystreets_views_pre_view(&$view, &$display_id, &$args) {
+  $name = ('dialer_list_page' == $view->name);
+  $display = ('page' == $display_id);
+  $views_ui = empty($view->views_ui_context) ? FALSE : TRUE;
+
+  $path = drupal_get_path('module', 'bf_smartystreets');
+
+  if ($name && $display && !$views_ui) {
+    drupal_add_js("$path/js/bf-smartystreets-dialer-list-page.js");
+    drupal_add_css("$path/css/bf-smartystreets-dialer-list-page.css");
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function bf_smartystreets_theme($existing, $type, $theme, $path) {
+  return [
+    'bf_ss_response' => [
+      'path' => "$path/templates",
+      'template' => "bf-ss-response",
+      'variables' => [
+        'record_type' => ['letter' => '', 'title' => ''],
+        'dpv_match_code' => ['letter' => '', 'title' => ''],
+        'dpv_vacant' => ['letter' => '', 'title' => ''],
+      ],
+    ],
+  ];
+}
+
+/**
+ * Implements hook_libraries_info().
+ */
+function bf_smartystreets_libraries_info() {
+  $libraries['smartystreets-php-sdk'] = [
+    'name' => 'Smartystreets PHP SDK',
+    'vendor url' => 'https://smartystreets.com',
+    'download url' => 'https://github.com/smartystreets/smartystreets-php-sdk',
+    'path' => 'src',
+    'files' => [
+      'php' => [
+        'International_Street/Lookup.php',
+        'US_Autocomplete/Lookup.php',
+        'US_Extract/Lookup.php',
+        'US_Street/Lookup.php',
+        'US_ZIPCode/Lookup.php',
+        'StaticCredentials.php',
+        'SharedCredentials.php',
+        'ClientBuilder.php',
+      ],
+    ],
+    'version arguments' => [
+      'file' => 'src/Version.php',
+      'pattern' => '/\'SMARTYSTREETS_VERSION\', \'(\d.\d.\d)\'/',
+      'lines' => 5,
+    ],
+  ];
+
+  return $libraries;
+}
+
+/**
+ * Implements hook_action_info().
+ */
+function bf_smartystreets_action_info() {
+  return [
+    'bf_smartystreets_run_smarty_streets_action' => [
+      'type' => BF_SS_CONTACT_ENTITY_TYPE,
+      'label' => t('Run Smarty Streets'),
+      'configurable' => FALSE,
+      'triggers' => array('any'),
+    ],
+
+    'bf_smartystreets_remove_and_create_action' => [
+      'type' => BF_SS_CONTACT_ENTITY_TYPE,
+      'label' => t('Move to new list'),
+      'configurable' => FALSE,
+      'triggers' => array('any'),
+    ],
+
+    'bf_smartystreets_remove_from_current_list_action' => [
+      'type' => BF_SS_CONTACT_ENTITY_TYPE,
+      'label' => t('Remove from current list'),
+      'configurable' => FALSE,
+      'triggers' => array('any'),
+    ],
+    'bf_smartystreets_update_broken_address_action' => [
+      'type' => BF_SS_CONTACT_ENTITY_TYPE,
+      'label' => t('Clear broken address part'),
+      'configurable' => FALSE,
+      'triggers' => array('any'),
+    ],
+  ];
+}
+
+/**
+ * Callback for "Run Smarty Streets" action.
+ */
+function bf_smartystreets_run_smarty_streets_action($entity, $context) {
+  $wrapper = entity_metadata_wrapper(BF_SS_CONTACT_ENTITY_TYPE, $entity);
+  $address_field = $wrapper->get('field_postal_address')->value();
+  $id = $entity->contact_id;
+  $address_field_copy = $address_field;
+
+  // Filter addresses because we want to verify addresses
+  // that is marked with "address_send_notice" box
+  // and is "Headquarter" or "Site Address" only.
+  foreach ($address_field_copy as $key => $item) {
+    $headquarter_address = ( 'Headquarters Address' == $item['address_type'] && !empty($item['address_send_notice']) );
+    $site_address = ( 'Site Address' == $item['address_type'] && !empty($item['address_send_notice']) );
+
+    if (!$headquarter_address && !$site_address) {
+      unset($address_field_copy[$key]);
+    }
+  }
+
+  // In case both of "Site Address" and "Headquarters Address" are presented
+  // and have "address_send_notice" box enabled make 'Headquarters Address'
+  // a priority address.
+  if (count($address_field_copy) > 1) {
+    foreach ($address_field_copy as $key => $item) {
+      if ($item['address_type'] != 'Headquarters Address') {
+        unset($address_field_copy[$key]);
+        break;
+      }
+    }
+  }
+
+  // Check whether response from Smarty Streets already exists
+  // for current address field.
+  $checked = bf_smartystreets_data_cheker($address_field_copy, $id);
+  $request_info = [];
+
+  foreach ($address_field_copy as $key => $info) {
+    $street = trim($info['thoroughfare']);
+    $street = str_replace(' ', '_', $street);
+
+    if ($checked[$street] == BF_SS_NOT_EXISTS) {
+      $request_info[$key] = [
+        'street'  => $info['thoroughfare'],
+        'city'    => $info['locality'],
+        'state'   => $info['administrative_area'],
+        'zipcode' => $info['postal_code'],
+      ];
+    }
+  }
+
+  if (!empty($request_info)) {
+    $library = libraries_load('smartystreets-php-sdk');
+
+    if ($library && !empty($library['loaded'])) {
+      $auth_id = variable_get('bf_ss_auth_id');
+      $auth_token = variable_get('bf_ss_auth_token');
+
+      $staticCredentials = new StaticCredentials($auth_id, $auth_token);
+      $client = (new ClientBuilder($staticCredentials))
+        ->buildUsStreetApiClient();
+
+      foreach ($request_info as $key => $info) {
+        $lookup = new StreetLookup();
+        $lookup->setStreet($info['street']);
+        $lookup->setCity($info['city']);
+        $lookup->setState($info['state']);
+        $lookup->setZipcode($info['zipcode']);
+
+        $pieces = [$info['street'], $info['city'], $info['state'], $info['zipcode']];
+        $full_address = implode('|', $pieces);
+        $response = NULL;
+
+        try {
+          $response = $client->sendLookup($lookup);
+        }
+        catch (\Exception $ex) {
+          watchdog('bf_smartystreets', $ex->getMessage());
+        }
+
+        if ($response) {
+          $response_decoded = drupal_json_decode($response->getPayload());
+          $components = $response_decoded[0]['components'];
+          $metadata = $response_decoded[0]['metadata'];
+          $analysis = $response_decoded[0]['analysis'];
+
+          $verified = [
+            'thoroughfare' => $response_decoded[0]['delivery_line_1'],
+            'locality' => $components['city_name'],
+            'administrative_area' => $components['state_abbreviation'],
+            'postal_code' => $components['zipcode'],
+          ];
+          $full_address_verified = implode('|', $verified);
+
+          // Rewrite address field according to verified address.
+          $address_field[$key] = array_merge($address_field[$key], $verified);
+
+          // Insert data into 'bf_smartystreets'.
+          $fields = [
+            'entity_id' => $id,
+            'response' => $response->getPayload(),
+            'full_address' => $full_address,
+            'full_address_verified' => $full_address_verified,
+            'record_type' => $metadata['record_type'],
+            'dpv_match_code' => $analysis['dpv_match_code'],
+            'dpv_vacant' => $analysis['dpv_vacant'],
+          ];
+
+          db_insert('bf_smartystreets')->fields($fields)->execute();
+
+          // Update field_industry according to "rdi".
+          bf_smartystreets_rdi_update($metadata['rdi'], $wrapper);
+        }
+        else {
+          // In case response is NULL.
+          $fields = [
+            'entity_id' => $id,
+            'response' => NULL,
+            'full_address' => $full_address,
+            'full_address_verified' => NULL,
+            'record_type' => NULL,
+            'dpv_match_code' => NULL,
+            'dpv_vacant' => NULL,
+          ];
+
+          db_insert('bf_smartystreets')->fields($fields)->execute();
+        }
+      }
+
+      $wrapper->field_postal_address->set($address_field);
+      $wrapper->save();
+    }
+  }
+}
+
+/**
+ * Helper function.
+ * Check whether response from Smarty Streets already exists.
+ *
+ * @see bf_smartystreets_run_smarty_streets_action().
+ */
+function bf_smartystreets_data_cheker($address_field, $entity_id) {
+  $checked = [];
+
+  foreach ($address_field as $address) {
+    $full_address_item = implode('|', [
+      $address['thoroughfare'],
+      $address['locality'],
+      $address['administrative_area'],
+      $address['postal_code'],
+    ]);
+
+    $query = db_select('bf_smartystreets', 'bf_ss')
+      ->fields('bf_ss', ['response'])
+      ->condition('entity_id', $entity_id);
+
+    $db_or = db_or();
+    $db_or->condition('full_address', $full_address_item, 'LIKE');
+    $db_or->condition('full_address_verified', $full_address_item, 'LIKE');
+    $query->condition($db_or);
+
+    $response = $query->execute()->fetchCol();
+
+    $street = trim($address['thoroughfare']);
+    $street_reworked = str_replace(' ', '_', $street);
+    $checked[$street_reworked] = empty($response) ? BF_SS_NOT_EXISTS : BF_SS_EXISTS;
+  }
+
+  return $checked;
+}
+
+/**
+ * Helper function.
+ * Update of field_industry according to "rdi" field from response.
+ * Do nothing whether "rdi" is [blank] or has different value from allowed.
+ *
+ * @see bf_smartystreets_run_smarty_streets_action().
+ */
+function bf_smartystreets_rdi_update($rdi, $wrapper) {
+  $haystack = ['Residential', 'Commercial'];
+
+  if (!empty($rdi) && in_array($rdi, $haystack)) {
+    $term = taxonomy_get_term_by_name($rdi, 'industry');
+    $term = array_values($term);
+    $wrapper->field_industry->set($term[0]);
+  }
+}
+
+/**
+ * Callback for "Remove to new list" action.
+ *
+ * Removes Contact`s to newly programmatically-created List.
+ */
+function bf_smartystreets_remove_and_create_action($entity, $context) {
+  $tid = $context['view_info']['exposed_input']['bf_ss_tid'];
+
+  $wrapper = entity_metadata_wrapper('crm_core_contact', $entity);
+  $field_tags = $wrapper->get('field_tags')->value();
+  $field_tags = array_filter($field_tags);
+  $hit = FALSE;
+
+  foreach ($field_tags as $tag) {
+    if ($tid == $tag->tid) { $hit = TRUE; }
+  }
+
+  // Add term if it was absent and save Contact.
+  if (!$hit) {
+    $field_tags[] = taxonomy_term_load($tid);
+    $wrapper->field_tags->set($field_tags);
+    $wrapper->save();
+  }
+}
+
+/**
+ * Callback for "Remove from current list" action.
+ *
+ * Removes Contact`s from existing List.
+ */
+function bf_smartystreets_remove_from_current_list_action($entity, $context) {
+  $tid = $context['view_info']['exposed_input']['bf_ss_tid'];
+
+  $wrapper = entity_metadata_wrapper('crm_core_contact', $entity);
+  $field_tags = $wrapper->get('field_tags')->value();
+  $field_tags = array_filter($field_tags);
+  $hit = FALSE;
+
+  foreach ($field_tags as $tag) {
+    if ($tid == $tag->tid) { $hit = TRUE; }
+  }
+
+  // Add term if it was absent and save Contact.
+  if (!$hit) {
+    $field_tags[] = taxonomy_term_load($tid);
+    $wrapper->field_tags->set($field_tags);
+    $wrapper->save();
+  }
+}
+
+/**
+ * Helper function. Explain record_type letter
+ * in "SS response" column on dialer_list_page view.
+ */
+function bf_smartystreets_record_type_explain($record_type) {
+  $explain = NULL;
+
+  switch ($record_type) {
+    case 'F':
+      $explain = [
+        'title' => 'Firm',
+        'description' => 'The finest level of match available for an address.',
+      ];
+      break;
+
+    case 'G':
+      $explain = [
+        'title' => 'General Delivery',
+        'description' => 'For mail to be held at local post offices.',
+      ];
+      break;
+
+    case 'H':
+      $explain = [
+        'title' => 'High-rise',
+        'description' => 'Address contains apartment or building sub-units.',
+      ];
+      break;
+
+    case 'P':
+      $explain = [
+        'title' => 'Post Office box',
+        'description' => 'Address is a PO Box record type.',
+      ];
+      break;
+
+    case 'R':
+      $explain = [
+        'title' => 'Rural Route or Highway Contract',
+        'description' => 'May have box number ranges.',
+      ];
+      break;
+
+    case 'S':
+      $explain = [
+        'title' => 'Street',
+        'description' => 'Address contains a valid primary number range.',
+      ];
+      break;
+  }
+
+  return $explain;
+}
+
+/**
+ * Helper function. Explain dpv_match_code letter
+ * in "SS response" column on dialer_list_page view.
+ */
+function bf_smartystreets_dpv_match_code_explain($dpv_match_code) {
+  $explain = NULL;
+
+  switch ($dpv_match_code) {
+    case 'Y':
+      $explain = [
+        'title' => 'Confirmed',
+        'description' => 'Entire address was DPV confirmed deliverable.',
+      ];
+      break;
+
+    case 'N':
+      $explain = [
+        'title' => 'Not Confirmed',
+        'description' => 'Address could not be DPV confirmed as deliverable.',
+      ];
+      break;
+
+    case 'S':
+      $explain = [
+        'title' => 'Confirmed By Dropping Secondary',
+        'description' => 'Address was DPV confirmed by dropping secondary info (apartment, suite, etc.).',
+      ];
+      break;
+
+    case 'D':
+      $explain = [
+        'title' => 'Confirmed - Missing Secondary Info',
+        'description' => 'The address was DPV confirmed, but it is missing secondary information (apartment, suite, etc.).',
+      ];
+      break;
+  }
+
+  return $explain;
+}
+
+/**
+ * Helper function. Explain dpv_vacant letter
+ * in "SS response" column on dialer_list_page view.
+ */
+function bf_smartystreets_dpv_vacant_explain($dpv_vacant) {
+  $explain = NULL;
+
+  switch ($dpv_vacant) {
+    case 'Y':
+      $explain = [
+        'title' => 'Address is vacant.',
+        'description' => '',
+      ];
+      break;
+
+    case 'N':
+      $explain = [
+        'title' => 'Address is not vacant.',
+        'description' => '',
+      ];
+      break;
+    case 'U':
+      $explain = [
+        'title' => 'Vacant record is undefined.',
+        'description' => '',
+      ];
+      break;
+  }
+
+  return $explain;
+}
+
+/**
+ * Callback for "Clear broken address part" action.
+ */
+function bf_smartystreets_update_broken_address_action($entity, $context) {
+  // Set possible address address errors values.
+  $check_array = [
+    'FIRE SYSTEMS',
+    'COMMERCIAL',
+    'IRRIGATION',
+  ];
+
+  // Get address.
+  $wrapper = entity_metadata_wrapper(BF_SS_CONTACT_ENTITY_TYPE, $entity);
+  $address_field = $wrapper->get('field_postal_address')->value();
+
+  // Run address checks.
+  if (!empty($address_field)) {
+    foreach ($address_field as $key => $item) {
+      // Check city.
+      if (empty($item['locality']) || is_null($item['locality'])) {
+        $address_field[$key]['locality'] = 'Chicago';
+      }
+
+      // Check state.
+      if (empty($item['administrative_area']) || is_null($item['administrative_area'])) {
+        $address_field[$key]['administrative_area'] = 'IL';
+      }
+
+      // Check address suffix.
+      if (!empty($item['thoroughfare'])) {
+        foreach ($check_array as $check_value) {
+          if (stripos($item['thoroughfare'], $check_value)) {
+            $check_count = strlen($check_value) + 1;
+            $address_field[$key]['thoroughfare'] = substr($item['thoroughfare'], 0, -$check_count);
+          }
+        }
+      }
+    }
+    // Save entity.
+    $wrapper->field_postal_address->set($address_field);
+  }
+}

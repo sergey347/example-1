@@ -1,0 +1,122 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the bf_smartystreets module.
+ */
+
+/**
+ * Implements hook_install().
+ */
+function bf_smartystreets_install() {
+  // Create tags for vocabulary.
+  $vocab = taxonomy_vocabulary_machine_name_load('tags');
+  $vid = $vocab->vid;
+
+  // Create parent term.
+  $term = new \stdClass();
+  $term->vid = $vid;
+  $term->name = 'Smarty Streets tags';
+  $term->description = '';
+  $term->format = 'editor';
+  taxonomy_term_save($term);
+
+  // Create child terms.
+  $parent = taxonomy_get_term_by_name('Smarty Streets tags', 'tags');
+  $parent = array_values($parent);
+  $child_terms = [BF_SS_HIGH_RISE, BF_SS_VALID, BF_SS_NOT_VALID, BF_SS_VACANT];
+
+  foreach ($child_terms as $key => $name) {
+    $term = new \stdClass();
+    $term->vid = $vid;
+    $term->name = $name;
+    $term->description = '';
+    $term->format = 'editor';
+    $term->weight = $key;
+    $term->parent = $parent[0]->tid;
+    taxonomy_term_save($term);
+  }
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function bf_smartystreets_uninstall() {
+  variable_del('bf_ss_auth_id');
+  variable_del('bf_ss_auth_token');
+}
+
+/**
+ * Implements hook_schema().
+ */
+function bf_smartystreets_schema() {
+  $schema['bf_smartystreets'] = [
+    'description' => 'Stores data from Smarty Streets service. Each response relates on certain Contact item.',
+    'fields' => [
+      'ssid' => [
+        'type' => 'serial',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+        'description' => 'Primary Key: Unique Smarty Streets entry ID.',
+      ],
+      'entity_id' => [
+        'type' => 'int',
+        'not null' => TRUE,
+        'description' => 'Contact Entity ID.',
+      ],
+      'response' => [
+        'type' => 'blob',
+        'not null' => FALSE,
+        'size' => 'big',
+        'description' => 'Response from Smarty Streets for certain Contact.',
+      ],
+      'full_address' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Full address manually inserted by employee in "Adress field" before Smarty Streets verification.',
+      ],
+      'full_address_verified' => [
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => FALSE,
+        'default' => '',
+        'description' => 'Full address corrected after Smarty Streets verification.',
+      ],
+      'record_type' => [
+        'type' => 'varchar',
+        'length' => 25,
+        'not null' => FALSE,
+        'default' => '',
+        'description' => 'Record-type value from response.',
+      ],
+      'dpv_match_code' => [
+        'type' => 'varchar',
+        'length' => 25,
+        'not null' => FALSE,
+        'default' => '',
+        'description' => 'DPV-match-code value from response.',
+      ],
+      'dpv_vacant' => [
+        'type' => 'varchar',
+        'length' => 25,
+        'not null' => FALSE,
+        'default' => '',
+        'description' => 'DPV-vacant value from response.',
+      ],
+    ],
+
+    'primary key' => ['ssid'],
+    'indexes' => [
+      'ei_index' => ['entity_id'],
+      'fa_index' => ['full_address'],
+      'fav_index' => ['full_address_verified'],
+      'rt_index' => ['record_type'],
+      'dpv_mc_index' => ['dpv_match_code'],
+      'dpv_v_index' => ['dpv_vacant'],
+    ],
+  ];
+
+  return $schema;
+}

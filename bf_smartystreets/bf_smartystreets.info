@@ -1,0 +1,10 @@
+name = Backflow Smartystreets
+description = Smartystreets API integration
+package = Backflow Custom
+core = 7.x
+
+; Views Handlers
+files[] = includes/views/handlers/bf_smartystreets_handler_response.inc
+files[] = includes/views/handlers/bf_smartystreets_handler_filter_record_type.inc
+files[] = includes/views/handlers/bf_smartystreets_handler_filter_dpv_match_code.inc
+files[] = includes/views/handlers/bf_smartystreets_handler_filter_dpv_vacant.inc

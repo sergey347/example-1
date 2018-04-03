@@ -1,0 +1,44 @@
+
+/**
+ * CSS loaded with "dialer_list_page" view.
+ */
+
+.ss-response-wrapper {
+  display: block;
+  text-align: center;
+}
+
+.ss-response {
+  display: inline-block;
+  width: 15px;
+  height: 18px;
+  margin-right: 7px;
+  color: white;
+  background-color: #39b3d7;
+  border-radius: 3px;
+}
+
+.ss-response.last {
+  margin-right: 0;
+}
+
+.form-item-bf-ss-response.form-item.form-group {
+  display: block;
+}
+
+.form-item-bf-ss-response {
+  margin-top: 15px;
+}
+
+.ss-response.undefined {
+  background-color: #fd97a0;
+}
+
+.mark-send-notice {
+  color: #428bca;
+}
+
+.views-field-field-postal-address-2,
+.views-field-field-postal-address-3 {
+  width: 150px;
+}
