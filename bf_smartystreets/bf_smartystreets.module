@@ -130,23 +130,15 @@ function bf_smartystreets_action_info() {
       'configurable' => FALSE,
       'triggers' => array('any'),
     ],
-
     'bf_smartystreets_remove_and_create_action' => [
       'type' => BF_SS_CONTACT_ENTITY_TYPE,
       'label' => t('Move to new list'),
       'configurable' => FALSE,
       'triggers' => array('any'),
     ],
-
     'bf_smartystreets_remove_from_current_list_action' => [
       'type' => BF_SS_CONTACT_ENTITY_TYPE,
       'label' => t('Remove from current list'),
-      'configurable' => FALSE,
-      'triggers' => array('any'),
-    ],
-    'bf_smartystreets_update_broken_address_action' => [
-      'type' => BF_SS_CONTACT_ENTITY_TYPE,
-      'label' => t('Clear broken address part'),
       'configurable' => FALSE,
       'triggers' => array('any'),
     ],
@@ -516,47 +508,4 @@ function bf_smartystreets_dpv_vacant_explain($dpv_vacant) {
   }
 
   return $explain;
-}
-
-/**
- * Callback for "Clear broken address part" action.
- */
-function bf_smartystreets_update_broken_address_action($entity, $context) {
-  // Set possible address address errors values.
-  $check_array = [
-    'FIRE SYSTEMS',
-    'COMMERCIAL',
-    'IRRIGATION',
-  ];
-
-  // Get address.
-  $wrapper = entity_metadata_wrapper(BF_SS_CONTACT_ENTITY_TYPE, $entity);
-  $address_field = $wrapper->get('field_postal_address')->value();
-
-  // Run address checks.
-  if (!empty($address_field)) {
-    foreach ($address_field as $key => $item) {
-      // Check city.
-      if (empty($item['locality']) || is_null($item['locality'])) {
-        $address_field[$key]['locality'] = 'Chicago';
-      }
-
-      // Check state.
-      if (empty($item['administrative_area']) || is_null($item['administrative_area'])) {
-        $address_field[$key]['administrative_area'] = 'IL';
-      }
-
-      // Check address suffix.
-      if (!empty($item['thoroughfare'])) {
-        foreach ($check_array as $check_value) {
-          if (stripos($item['thoroughfare'], $check_value)) {
-            $check_count = strlen($check_value) + 1;
-            $address_field[$key]['thoroughfare'] = substr($item['thoroughfare'], 0, -$check_count);
-          }
-        }
-      }
-    }
-    // Save entity.
-    $wrapper->field_postal_address->set($address_field);
-  }
 }
