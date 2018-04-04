@@ -9,13 +9,12 @@ This module provides us 3 actions:
 ```
 Actions are using via VBO views field.
 
-First of all you run [1] action and see the result in 
-"Smarty Streets response" column in current "Dialer List" view.
+First of all you run [1] action and see the result in "Smarty Streets response" column 
+in current "Dialer List" view.
 
-Now, Regarding on result you got, you can perform [2] or [3] action. 
+Now, regarding on result you got, you can perform [2] or [3] action. 
 [2] action will move contacts from current List to newly created.
 [3] action will permanently remove contacts from current List.
 
-Smarty Streets response is stored in table "bf_smartystreets" 
-according to each contact item. 
+Smarty Streets response is stored in table "bf_smartystreets" according to each contact item. 
 ```
